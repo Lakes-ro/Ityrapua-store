@@ -1465,7 +1465,7 @@ const Products = {
 
         const userId = window.APP.auth.userId;
         const path = `${userId}/${productId}-${Date.now()}-rot-${sanitizeFileName(upload.name)}`;
-        const { error: upErr } = await _supabase.storage.from('product-images').upload(path, upload, { contentType: upload.type });
+        const { error: upErr } = await this._uploadWithRetry(path, upload, { contentType: upload.type });
         if (upErr) throw upErr;
 
         const newUrl = _supabase.storage.from('product-images').getPublicUrl(path).data.publicUrl;
@@ -1704,10 +1704,10 @@ const Products = {
             const uploadFile = isVideo ? file : await compressImage(file);
             const path = `${userId}/${productId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${sanitizeFileName(uploadFile.name)}`;
 
-            const { error: upErr } = await _supabase.storage.from('product-images').upload(path, uploadFile, {
+            const { error: upErr } = await this._uploadWithRetry(path, uploadFile, {
                 contentType: uploadFile.type || undefined
             });
-            if (upErr) { failures.push(`enviar "${file.name}"`); log(upErr.message, 'warning'); continue; }
+            if (upErr) { failures.push(`enviar "${file.name}" (conexão caiu — edite o produto e adicione a foto de novo)`); continue; }
 
             const { data: pub } = _supabase.storage.from('product-images').getPublicUrl(path);
             const { error: insErr } = await _supabase.from('product_media').insert([{
@@ -1722,6 +1722,30 @@ const Products = {
             }
         }
         return failures;
+    },
+
+    /**
+     * Envia pro Storage tentando até 3 vezes. Em internet instável a conexão
+     * cai no meio do envio ("Failed to fetch") e uma nova tentativa resolve.
+     */
+    async _uploadWithRetry(path, file, options = {}) {
+        let last = null;
+        for (let attempt = 1; attempt <= 3; attempt++) {
+            try {
+                const res = await _supabase.storage.from('product-images').upload(path, file, options);
+                if (!res.error) return res;
+                last = res.error;
+                // a tentativa anterior chegou a gravar: considera enviado
+                if (/already exists|duplicate/i.test(res.error.message || '')) return { data: { path }, error: null };
+                // erro de regra/tipo/tamanho não adianta repetir
+                if (!/fetch|network|timeout|failed|abort|5\d\d|gateway/i.test(`${res.error.message} ${res.error.statusCode || ''}`)) break;
+            } catch (err) {
+                last = err;
+            }
+            if (attempt < 3) await new Promise(r => setTimeout(r, attempt * 1500));
+        }
+        log(`⚠️ Envio falhou: ${last?.message || last}`, 'warning');
+        return { data: null, error: last || new Error('Falha no envio') };
     },
 
     async _deleteMediaStorageFile(url) {

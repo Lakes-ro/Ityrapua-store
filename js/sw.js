@@ -7,7 +7,7 @@
  *  - Notificação push "🎉 Nova venda!" (ver js/notifications.js).
  */
 
-const CACHE_NAME = 'marketplace-v6.4';
+const CACHE_NAME = 'marketplace-v6.6';
 
 const ASSETS_TO_CACHE = [
     './',
@@ -129,8 +129,9 @@ self.addEventListener('push', (event) => {
         badge: 'img/icon-maskable-192.png',
         tag: data.tag || 'ityrapuan',
         renotify: true,
-        requireInteraction: false,
-        vibrate: [120, 60, 120],
+        silent: false,                      // usa o som de notificação do aparelho
+        requireInteraction: data.kind === 'sale',
+        vibrate: data.kind === 'sale' ? [200, 100, 200, 100, 400] : [150, 80, 150],
         data: { url: data.url || './index.html#vendas' }
     };
     event.waitUntil(self.registration.showNotification(title, options));
@@ -145,7 +146,7 @@ self.addEventListener('notificationclick', (event) => {
         for (const w of wins) {
             if (w.url.startsWith(self.registration.scope)) {
                 await w.focus();
-                w.postMessage({ type: 'OPEN_SALES' });
+                w.postMessage({ type: 'OPEN_SALES', hash: new URL(target).hash });
                 return;
             }
         }

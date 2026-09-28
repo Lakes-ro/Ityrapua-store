@@ -140,45 +140,124 @@ if (typeof window.CONFIG_LOADED !== 'undefined') {
     };
 
     // ── Som de notificação ─────────────────────────────────────
+    // Navegadores só liberam som depois do 1º toque na página. O contexto
+    // de áudio é criado/"destravado" nesse toque e, se um aviso chegar
+    // antes, o som espera o destrave em vez de sumir.
+    const SOUND_KEY = 'ityrapuan_sound_enabled';
     let _audioCtx = null;
+    let _master = null;
+
     function _ensureAudioContext() {
         if (!_audioCtx) {
-            try { _audioCtx = new (window.AudioContext || window.webkitAudioContext)(); }
-            catch { return null; }
+            try {
+                _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                // compressor = som mais alto sem estourar
+                const comp = _audioCtx.createDynamicsCompressor();
+                comp.threshold.value = -18;
+                comp.ratio.value = 6;
+                _master = _audioCtx.createGain();
+                _master.gain.value = 0.9;
+                _master.connect(comp);
+                comp.connect(_audioCtx.destination);
+            } catch { return null; }
         }
         if (_audioCtx.state === 'suspended') _audioCtx.resume().catch(() => {});
         return _audioCtx;
     }
-    ['click', 'touchstart', 'keydown'].forEach((evt) => {
-        document.addEventListener(evt, () => _ensureAudioContext(), { once: true, passive: true });
+    ['pointerdown', 'touchstart', 'keydown'].forEach((evt) => {
+        document.addEventListener(evt, () => _ensureAudioContext(), { passive: true });
     });
 
-    window.playNotificationSound = function (type = 'default') {
+    window.isNotificationSoundEnabled = function () {
+        try { return localStorage.getItem(SOUND_KEY) !== '0'; } catch { return true; }
+    };
+    window.setNotificationSoundEnabled = function (on) {
+        try { localStorage.setItem(SOUND_KEY, on ? '1' : '0'); } catch { /* ignora */ }
+    };
+
+    // Uma nota de "sino": fundamental + harmônico, ataque rápido e cauda longa
+    function _bell(ctx, freq, start, dur, vol = 0.5, type = 'triangle') {
+        [[1, vol], [2.01, vol * 0.35], [3.02, vol * 0.12]].forEach(([mult, v]) => {
+            const osc = ctx.createOscillator();
+            const g = ctx.createGain();
+            osc.type = mult === 1 ? type : 'sine';
+            osc.frequency.value = freq * mult;
+            g.gain.setValueAtTime(0.0001, start);
+            g.gain.exponentialRampToValueAtTime(v, start + 0.008);
+            g.gain.exponentialRampToValueAtTime(0.0001, start + dur);
+            osc.connect(g);
+            g.connect(_master);
+            osc.start(start);
+            osc.stop(start + dur + 0.05);
+        });
+    }
+
+    // "Tchi" metálico da caixa registradora
+    function _chink(ctx, start) {
+        const len = Math.floor(ctx.sampleRate * 0.08);
+        const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+        const d = buf.getChannelData(0);
+        for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / len);
+        const src = ctx.createBufferSource();
+        src.buffer = buf;
+        const hp = ctx.createBiquadFilter();
+        hp.type = 'highpass';
+        hp.frequency.value = 3500;
+        const g = ctx.createGain();
+        g.gain.value = 0.35;
+        src.connect(hp); hp.connect(g); g.connect(_master);
+        src.start(start);
+    }
+
+    const SOUNDS = {
+        // 🎉 venda: "ka-ching" + arpejo alegre (bem diferente dos outros)
+        sale: (ctx, t) => {
+            _chink(ctx, t);
+            _bell(ctx, 1046.5, t + 0.02, 0.35, 0.55);   // C6
+            _bell(ctx, 1318.5, t + 0.12, 0.35, 0.55);   // E6
+            _bell(ctx, 1568.0, t + 0.22, 0.45, 0.55);   // G6
+            _bell(ctx, 2093.0, t + 0.34, 0.9, 0.6);     // C7 (fica soando)
+        },
+        // 🆕 produto novo: "plim-plom" de campainha
+        product: (ctx, t) => {
+            _bell(ctx, 1318.5, t, 0.6, 0.55, 'sine');    // E6
+            _bell(ctx, 987.8, t + 0.22, 0.9, 0.55, 'sine'); // B5
+        },
+        // 🚫 moderação: dois toques graves
+        moderation: (ctx, t) => {
+            _bell(ctx, 523.3, t, 0.25, 0.5, 'square');
+            _bell(ctx, 392.0, t + 0.2, 0.4, 0.5, 'square');
+        },
+        restock: (ctx, t) => {
+            _bell(ctx, 784.0, t, 0.3, 0.5);
+            _bell(ctx, 1174.7, t + 0.14, 0.5, 0.5);
+        },
+        default: (ctx, t) => _bell(ctx, 880, t, 0.5, 0.5)
+    };
+    const VIBRATE = { sale: [200, 100, 200, 100, 400], product: [120, 80, 120], moderation: [300], restock: [120] };
+
+    /**
+     * @param {'sale'|'product'|'moderation'|'restock'|'default'} type
+     * @param {{force?: boolean}} opts  force = toca mesmo com o som desligado (botão "Testar")
+     */
+    window.playNotificationSound = function (type = 'default', opts = {}) {
+        if (!opts.force && !window.isNotificationSoundEnabled()) return;
+        try { navigator.vibrate?.(VIBRATE[type] || 150); } catch { /* ignora */ }
         try {
             const ctx = _ensureAudioContext();
-            if (!ctx || ctx.state !== 'running') return;
-            const now = ctx.currentTime;
-            const presets = {
-                sale: [{ freq: 880, start: 0, dur: 0.12 }, { freq: 1174.66, start: 0.12, dur: 0.18 }],
-                moderation: [{ freq: 660, start: 0, dur: 0.16 }],
-                restock: [{ freq: 523.25, start: 0, dur: 0.12 }, { freq: 783.99, start: 0.12, dur: 0.16 }],
-                default: [{ freq: 740, start: 0, dur: 0.15 }]
+            if (!ctx) return;
+            const asked = Date.now();
+            const play = () => {
+                if (Date.now() - asked > 120000) return; // aviso velho: não toca atrasado
+                (SOUNDS[type] || SOUNDS.default)(ctx, ctx.currentTime + 0.03);
             };
-            (presets[type] || presets.default).forEach((n) => {
-                const osc = ctx.createOscillator();
-                const gain = ctx.createGain();
-                osc.type = 'sine';
-                osc.frequency.value = n.freq;
-                const t0 = now + n.start;
-                const t1 = t0 + n.dur;
-                gain.gain.setValueAtTime(0.0001, t0);
-                gain.gain.exponentialRampToValueAtTime(0.35, t0 + 0.01);
-                gain.gain.exponentialRampToValueAtTime(0.0001, t1);
-                osc.connect(gain);
-                gain.connect(ctx.destination);
-                osc.start(t0);
-                osc.stop(t1 + 0.02);
-            });
+            if (ctx.state === 'running') play();
+            else {
+                // ainda travado: toca assim que a pessoa tocar na tela (até 2 min)
+                ctx.resume().then(play).catch(() => {
+                    document.addEventListener('pointerdown', () => ctx.resume().then(play).catch(() => {}), { once: true });
+                });
+            }
         } catch { /* som é opcional */ }
     };
 

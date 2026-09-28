@@ -18,9 +18,19 @@ const Notifications = {
     channel: null,
     unseenCount: 0,
 
+    /** Vendedor (vendas dele) ou Admin (vendas da loja + produtos novos). */
+    _isAudience() {
+        const a = window.APP?.auth;
+        return !!(a?.hasSellerTools?.() || a?.isSupreme?.());
+    },
+    _isAdminOnly() {
+        const a = window.APP?.auth;
+        return !!(a?.isSupreme?.() && !a?.hasSellerTools?.());
+    },
+
     init() {
         try {
-            if (!window.APP?.auth?.hasSellerTools?.()) return;
+            if (!this._isAudience()) return;
             if (!window._supabase) return;
 
             this._subscribeRealtime();
@@ -47,6 +57,15 @@ const Notifications = {
 
     _handleNewItem(item) {
         try {
+            // Admin: avisa qualquer venda da loja (1 aviso por pedido)
+            if (this._isAdminOnly()) {
+                this._seenOrders = this._seenOrders || new Set();
+                if (this._seenOrders.has(item.order_id)) return;
+                this._seenOrders.add(item.order_id);
+                const p = (window.APP?.products?.manageProducts || []).find(x => x.id === item.product_id);
+                this._showSaleToast(p?.name || 'produto', item.quantity || 1, item.unit_price || 0, true);
+                return;
+            }
             const myId = window.APP?.auth?.userId;
             const product = (window.APP?.products?.manageProducts || []).find(p => p.id === item.product_id);
             if (!product || product.owner_id !== myId) return;
@@ -67,13 +86,15 @@ const Notifications = {
         return c;
     },
 
-    _showSaleToast(name, qty, unitPrice) {
+    _showSaleToast(name, qty, unitPrice, storeWide = false) {
         const total = (unitPrice || 0) * (qty || 1);
         const toast = document.createElement('div');
         toast.className = 'cart-toast sale-toast';
         toast.innerHTML = `
             <i data-lucide="party-popper" class="cart-toast-icon" style="color:#3b82f6"></i>
-            <span>🎉 Venda! ${qty > 1 ? qty + 'x ' : ''}${escapeHtml(name)} — R$ ${formatBRL(total)} · confirme em até 2h</span>`;
+            <span>${storeWide
+                ? `🛒 Nova venda na loja: ${qty > 1 ? qty + 'x ' : ''}${escapeHtml(name)} — R$ ${formatBRL(total)}`
+                : `🎉 Venda! ${qty > 1 ? qty + 'x ' : ''}${escapeHtml(name)} — R$ ${formatBRL(total)} · confirme em até 2h`}</span>`;
         this._toastContainer().appendChild(toast);
         window.playNotificationSound?.('sale');
         if (window.lucide) lucide.createIcons();
@@ -277,15 +298,19 @@ const Notifications = {
 
     /** Cartão em Configurações da Loja com o status e os botões. */
     async renderPushCard() {
-        const section = document.getElementById('vendor-settings-section');
-        if (!section || !window.APP?.auth?.hasSellerTools?.()) return;
+        if (!this._isAudience()) { document.getElementById('push-settings-card')?.remove(); return; }
+        const adminOnly = this._isAdminOnly();
+        // Vendedor: em Configurações da Loja · Admin: no Admin Panel
+        const section = document.getElementById(adminOnly ? 'admin-section' : 'vendor-settings-section');
+        if (!section) return;
 
         let card = document.getElementById('push-settings-card');
+        if (card && !section.contains(card)) { card.remove(); card = null; }
         if (!card) {
             card = document.createElement('div');
             card.id = 'push-settings-card';
             card.className = 'bg-slate-900/50 p-6 rounded-2xl border border-white/5 mb-6';
-            const anchor = document.getElementById('vendor-pix-key-section');
+            const anchor = document.getElementById(adminOnly ? 'image-optimizer-panel' : 'vendor-pix-key-section');
             if (anchor) anchor.insertAdjacentElement('beforebegin', card);
             else section.appendChild(card);
 
@@ -296,6 +321,13 @@ const Notifications = {
                 else if (action === 'test') this.sendTestPush();
                 else if (action === 'ios') this._showIOSInstallHelp();
                 else if (action === 'denied') this._showDeniedHelp();
+                else if (action === 'sound-toggle') {
+                    window.setNotificationSoundEnabled?.(!window.isNotificationSoundEnabled?.());
+                    this.renderPushCard();
+                    if (window.isNotificationSoundEnabled?.()) window.playNotificationSound?.('sale');
+                }
+                else if (action === 'sound-sale') window.playNotificationSound?.('sale', { force: true });
+                else if (action === 'sound-product') window.playNotificationSound?.('product', { force: true });
             });
         }
 
@@ -306,13 +338,17 @@ const Notifications = {
         const states = {
             enabled: {
                 badge: '<span style="color:#22c55e;font-weight:800">✅ Ativado neste aparelho</span>',
-                text: 'Você recebe "🎉 Nova venda!" na tela, mesmo com o site fechado.',
+                text: adminOnly
+                    ? 'Você recebe "🛒 Nova venda na loja" e "🆕 Novo produto" na tela, mesmo com o site fechado.'
+                    : 'Você recebe "🎉 Nova venda!" na tela, mesmo com o site fechado.',
                 buttons: btn('test', '🔔 Enviar teste', '#3b82f6') + btn('disable', 'Desativar', '#475569')
             },
             disabled: {
                 badge: '<span style="color:#f59e0b;font-weight:800">⚠️ Desativado neste aparelho</span>',
-                text: 'Ative para receber um aviso na tela a cada venda, mesmo com o site fechado. Faça isso em cada aparelho que você usa.',
-                buttons: btn('enable', '🔔 Ativar avisos de venda', '#16a34a')
+                text: adminOnly
+                    ? 'Ative para receber um aviso a cada venda e a cada produto novo, mesmo com o site fechado. Faça isso em cada aparelho que você usa.'
+                    : 'Ative para receber um aviso na tela a cada venda, mesmo com o site fechado. Faça isso em cada aparelho que você usa.',
+                buttons: btn('enable', adminOnly ? '🔔 Ativar avisos' : '🔔 Ativar avisos de venda', '#16a34a')
             },
             denied: {
                 badge: '<span style="color:#ef4444;font-weight:800">🔕 Bloqueado no navegador</span>',
@@ -332,11 +368,28 @@ const Notifications = {
         };
         const s = states[status] || states.unsupported;
 
+        const soundOn = window.isNotificationSoundEnabled?.() !== false;
+        const small = (action, label) =>
+            `<button type="button" data-push-action="${action}" style="min-height:40px;padding:8px 12px;border-radius:10px;border:1px solid rgba(148,163,184,.3);background:transparent;color:inherit;font-weight:700;font-size:13px;cursor:pointer">${label}</button>`;
+
         card.innerHTML = `
-            <h3 class="text-lg font-black text-slate-300 mb-2">🔔 Avisos de venda no celular</h3>
+            <h3 class="text-lg font-black text-slate-300 mb-2">🔔 ${adminOnly ? 'Avisos de vendas e produtos novos' : 'Avisos de venda no celular'}</h3>
             <div style="font-size:13px;margin-bottom:6px">${s.badge}</div>
             <p class="text-xs text-slate-500 mb-4 leading-relaxed">${s.text}</p>
-            ${s.buttons ? `<div style="display:flex;gap:10px;flex-wrap:wrap">${s.buttons}</div>` : ''}`;
+            ${s.buttons ? `<div style="display:flex;gap:10px;flex-wrap:wrap">${s.buttons}</div>` : ''}
+            <div style="margin-top:16px;padding-top:14px;border-top:1px solid rgba(148,163,184,.15)">
+                <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+                    <div>
+                        <div style="font-weight:800;font-size:14px">${soundOn ? '🔊 Som ligado' : '🔇 Som desligado'}</div>
+                        <div class="text-xs text-slate-500">Toca com o site aberto. Com o site fechado, vale o som de notificação do celular.</div>
+                    </div>
+                    <button type="button" data-push-action="sound-toggle" style="min-height:40px;padding:8px 14px;border-radius:999px;border:none;font-weight:800;font-size:13px;cursor:pointer;color:#fff;background:${soundOn ? '#475569' : '#16a34a'}">${soundOn ? 'Desligar som' : 'Ligar som'}</button>
+                </div>
+                <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+                    ${small('sound-sale', '▶️ Ouvir som de venda')}
+                    ${adminOnly ? small('sound-product', '▶️ Ouvir som de produto novo') : ''}
+                </div>
+            </div>`;
     },
 
     /** Convite depois do login (vendedor sem push ativo), dispensável por 7 dias. */
@@ -357,8 +410,8 @@ const Notifications = {
             <div style="display:flex;gap:12px;align-items:flex-start">
                 <div style="font-size:26px;line-height:1">🔔</div>
                 <div style="flex:1;min-width:0">
-                    <div style="font-weight:900;font-size:15px;margin-bottom:4px">Não perca nenhuma venda</div>
-                    <div style="font-size:13px;color:#94a3b8;line-height:1.45">Receba um aviso na tela do celular a cada venda, mesmo com o site fechado.</div>
+                    <div style="font-weight:900;font-size:15px;margin-bottom:4px">${this._isAdminOnly() ? 'Acompanhe a loja pelo celular' : 'Não perca nenhuma venda'}</div>
+                    <div style="font-size:13px;color:#94a3b8;line-height:1.45">${this._isAdminOnly() ? 'Receba um aviso a cada venda e a cada produto novo, mesmo com o site fechado.' : 'Receba um aviso na tela do celular a cada venda, mesmo com o site fechado.'}</div>
                     <div style="display:flex;gap:8px;margin-top:12px">
                         <button type="button" data-yes style="flex:1;min-height:42px;border:none;border-radius:12px;background:#16a34a;color:#fff;font-weight:800;cursor:pointer">Ativar avisos</button>
                         <button type="button" data-no style="min-height:42px;padding:0 14px;border:none;border-radius:12px;background:rgba(148,163,184,.15);color:#cbd5e1;font-weight:700;cursor:pointer">Agora não</button>

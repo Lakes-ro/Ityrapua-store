@@ -225,6 +225,8 @@ const Orders = {
 
             setStatus('✅ Comprovante enviado! Aguarde a confirmação do vendedor.', 'text-green-400');
             zoneEl?.classList.add('hidden');
+            this._updateReceipt(orderId, { proof_sent: true });
+            document.querySelector('.receipt-overlay [data-cancel-order]')?.remove();
         } catch (err) {
             log(`❌ Erro ao enviar comprovante: ${err.message}`, 'error');
             setStatus('❌ Não foi possível enviar. Use o botão do WhatsApp abaixo.', 'text-red-400');
@@ -331,6 +333,14 @@ const Orders = {
             .rc-trust{display:flex;align-items:center;justify-content:center;gap:6px;font-size:12px;color:var(--muted);text-align:center}
             .rc-footer{padding:4px 20px 24px;display:flex;flex-direction:column;gap:10px}
             .rc-link{background:none;border:none;color:var(--muted);font-size:13px;font-weight:700;cursor:pointer;padding:6px}
+            .rc-link-danger{color:#ef4444}
+            .rc-alert-danger{background:rgba(239,68,68,.12);color:#dc2626;border:1px solid rgba(239,68,68,.3)}
+            html:not([data-theme="light"]) .rc-alert-danger{color:#f87171}
+            .rc-cancel-box{margin-top:12px;padding:14px;border-radius:16px;border:1px solid rgba(239,68,68,.35);background:rgba(239,68,68,.06);text-align:left}
+            .rc-cancel-box select{width:100%;margin:8px 0 12px;padding:12px;border-radius:12px;border:1px solid var(--line);background:var(--soft);color:var(--text);font-size:15px}
+            .rc-cancel-actions{display:flex;gap:8px}
+            .rc-cancel-actions button{flex:1;min-height:46px;border-radius:12px;font-weight:800;font-size:14px;cursor:pointer;border:none}
+            .rc-btn-danger{background:#dc2626;color:#fff}
         `;
         document.head.appendChild(style);
     },
@@ -464,7 +474,83 @@ const Orders = {
     },
 
     _isPixPending(r) {
-        return r.payment_method === 'Pix' && (Date.now() - new Date(r.timestamp).getTime()) < this.PIX_WINDOW_MS;
+        return !r.cancelled && r.payment_method === 'Pix' && (Date.now() - new Date(r.timestamp).getTime()) < this.PIX_WINDOW_MS;
+    },
+
+    /** Pode cancelar: não cancelado, sem comprovante enviado e dentro das 2h do pedido. */
+    _canCancel(r) {
+        return !r.cancelled && !r.proof_sent && (Date.now() - new Date(r.timestamp).getTime()) < 2 * 3600 * 1000;
+    },
+
+    _updateReceipt(orderId, patch) {
+        const list = this._loadReceipts();
+        const r = list.find(x => x.order_id === orderId);
+        if (r) { Object.assign(r, patch); this._saveReceipts(list); }
+    },
+
+    CANCEL_ERRORS: {
+        already_paid: '💸 Você já enviou o comprovante de pagamento, então o cancelamento precisa ser combinado com o vendedor. Chame ele no WhatsApp.',
+        already_cancelled: 'ℹ️ Este pedido já estava cancelado.',
+        not_allowed: '❌ Não foi possível confirmar que este pedido é seu.',
+        order_not_found: '❌ Pedido não encontrado.',
+        cannot_cancel_status: '⏱️ Este pedido já expirou ou foi finalizado — não dá mais para cancelar por aqui. Se precisar, fale com o vendedor.'
+    },
+
+    /** Cliente desiste do pedido: devolve o estoque e avisa os vendedores. */
+    async cancelOrder(orderData, reason) {
+        const { error } = await _supabase.rpc('cancel_order_by_customer', {
+            p_order_id: orderData.order_id,
+            p_customer_phone: orderData.customer_phone,
+            p_reason: reason || null
+        });
+        if (error) {
+            const key = Object.keys(this.CANCEL_ERRORS).find(k => (error.message || '').includes(k));
+            if (key === 'already_cancelled') this._updateReceipt(orderData.order_id, { cancelled: true });
+            if (key === 'already_paid') this._updateReceipt(orderData.order_id, { proof_sent: true });
+            throw new Error(key ? this.CANCEL_ERRORS[key] : `❌ Não foi possível cancelar: ${error.message}`);
+        }
+        this._updateReceipt(orderData.order_id, { cancelled: true, dismissed: true, cancelled_at: new Date().toISOString() });
+        this._ensureMyOrdersEntry();
+    },
+
+    _openCancelBox(overlay, orderData) {
+        if (overlay.querySelector('.rc-cancel-box')) return;
+        const box = document.createElement('div');
+        box.className = 'rc-cancel-box';
+        box.innerHTML = `
+            <div style="font-weight:900;font-size:15px">Cancelar este pedido?</div>
+            <div class="rc-hint" style="text-align:left;margin-top:4px">Os itens voltam para a loja e o vendedor recebe um aviso. ${orderData.payment_method === 'Pix' ? '<b>Não faça o Pix</b> depois de cancelar.' : ''}</div>
+            <label style="display:block;font-size:13px;font-weight:700;margin-top:10px">Motivo (opcional)</label>
+            <select data-cancel-reason>
+                <option value="">Escolha um motivo</option>
+                <option>Comprei o item errado</option>
+                <option>Quero mudar a quantidade</option>
+                <option>Desisti da compra</option>
+                <option>Demorou para responder</option>
+                <option>Outro motivo</option>
+            </select>
+            <div class="rc-cancel-actions">
+                <button type="button" class="rc-btn-ghost" data-cancel-no>Voltar</button>
+                <button type="button" class="rc-btn-danger" data-cancel-yes>Sim, cancelar</button>
+            </div>`;
+        overlay.querySelector('.rc-footer').appendChild(box);
+        box.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+        box.querySelector('[data-cancel-no]').addEventListener('click', () => box.remove());
+        box.querySelector('[data-cancel-yes]').addEventListener('click', async (e) => {
+            const btn = e.currentTarget;
+            btn.disabled = true;
+            btn.textContent = '⏳ Cancelando...';
+            try {
+                await this.cancelOrder(orderData, box.querySelector('[data-cancel-reason]').value);
+                overlay.remove();
+                this._toast('❌ Pedido cancelado. O vendedor foi avisado.');
+            } catch (err) {
+                alert(err.message);
+                btn.disabled = false;
+                btn.textContent = 'Sim, cancelar';
+            }
+        });
     },
 
     /** Chamado no carregamento do app: reabre o Pix pendente que a pessoa não fechou. */
@@ -491,7 +577,8 @@ const Orders = {
             const when = new Date(r.timestamp).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
             const vendors = (r.vendors || []).map(v => v.vendor_name).join(', ');
             let badge;
-            if (r.payment_method !== 'Pix') badge = '<span style="color:#22c55e">💵 Pagar na entrega</span>';
+            if (r.cancelled) badge = '<span style="color:#ef4444">❌ Cancelado</span>';
+            else if (r.payment_method !== 'Pix') badge = '<span style="color:#22c55e">💵 Pagar na entrega</span>';
             else if (this._isPixPending(r)) badge = '<span style="color:#f59e0b">⏱️ Aguardando Pix</span>';
             else badge = '<span style="color:#94a3b8">Pix — prazo encerrado</span>';
             return `
@@ -673,7 +760,9 @@ const Orders = {
                         <strong>R$ ${formatBRL(orderData.total_amount)}</strong>
                     </div>
 
-                    ${isPix ? `<div class="rc-alert rc-alert-warn">⏱️ Pague até <b>${expires}</b> — depois disso o pedido expira e os itens voltam para a loja.</div>` : ''}
+                    ${orderData.cancelled
+                        ? '<div class="rc-alert rc-alert-danger">❌ <b>Pedido cancelado.</b> Não faça o pagamento — os itens já voltaram para a loja.</div>'
+                        : (isPix ? `<div class="rc-alert rc-alert-warn">⏱️ Pague até <b>${expires}</b> — depois disso o pedido expira e os itens voltam para a loja.</div>` : '')}
 
                     <div class="rc-label">Próximos passos</div>
                     ${this._steps(isPix, multi)}
@@ -699,6 +788,7 @@ const Orders = {
                 <div class="rc-footer">
                     <button type="button" class="rc-btn rc-btn-ghost" data-close-receipt>🛍️ Continuar comprando</button>
                     <button type="button" class="rc-link" data-print-receipt>🖨️ Imprimir comprovante</button>
+                    ${this._canCancel(orderData) ? '<button type="button" class="rc-link rc-link-danger" data-cancel-order>Comprou errado? Cancelar pedido</button>' : ''}
                 </div>
             </div>`;
 
@@ -712,6 +802,7 @@ const Orders = {
         overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
 
         overlay.querySelector('[data-print-receipt]').addEventListener('click', () => this.printReceipt(orderData));
+        overlay.querySelector('[data-cancel-order]')?.addEventListener('click', () => this._openCancelBox(overlay, orderData));
 
         document.body.appendChild(overlay);
     }

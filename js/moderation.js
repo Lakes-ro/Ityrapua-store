@@ -206,8 +206,7 @@ const Moderation = {
         });
         container.appendChild(toast);
 
-        // ✅ NOVO: som de notificação
-        window.playNotificationSound?.('moderation');
+        window.playNotificationSound?.(isFlagged ? 'moderation' : 'product');
 
         if (window.lucide) lucide.createIcons();
 

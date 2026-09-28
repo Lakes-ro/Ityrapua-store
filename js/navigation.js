@@ -272,6 +272,7 @@ const Navigation = {
                     app.products?.renderAdmin();
                     window.ImageOptimizer?.renderPanel?.();
                     app.vendorSettings?.refreshGlobalOverride?.();
+                    app.notifications?.renderPushCard?.();
                     break;
                 case 'seller':
                     app.products?.renderSeller();

@@ -34,7 +34,7 @@ const VendorNotices = {
                 (payload) => {
                     if (!payload?.new || this._unread.some(n => n.id === payload.new.id)) return;
                     this._unread.unshift(payload.new);
-                    window.playNotificationSound?.('sale');
+                    window.playNotificationSound?.(String(payload.new.title || '').startsWith('❌') ? 'moderation' : 'sale');
                     this._showInbox();
                 })
             .subscribe();

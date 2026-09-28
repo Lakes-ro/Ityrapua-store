@@ -292,14 +292,20 @@ const BI = {
         });
         this._set('bi-period-label', range.label);
 
-        this.renderKPIs(filtered, previous);
-        this.renderMarginBar(filtered);
-        this.renderABC(filtered);
-        this.renderVendorRanking(filtered);
+        // Cancelado pelo cliente / expirado sem pagamento não é venda:
+        // aparece na lista, mas fica fora do faturamento e dos gráficos.
+        const isSale = (o) => o.status !== 'cancelled' && o.status !== 'expired';
+        const sales = filtered.filter(isSale);
+        const prevSales = previous ? previous.filter(isSale) : null;
+
+        this.renderKPIs(sales, prevSales);
+        this.renderMarginBar(sales);
+        this.renderABC(sales);
+        this.renderVendorRanking(sales);
         this.renderLowStock();
-        this.renderStockTurnover(filtered, range);
+        this.renderStockTurnover(sales, range);
         this.renderOrderList(filtered);
-        await this.prepareCharts(filtered, token, range);
+        await this.prepareCharts(sales, token, range);
     },
 
     // ── KPIs ───────────────────────────────────────────────────
@@ -598,7 +604,7 @@ const BI = {
             return `
                 <div class="flex justify-between items-start bg-white/5 p-4 rounded-xl border border-white/5 ${expired ? 'opacity-50' : ''}">
                     <div class="flex-1 min-w-0 pr-3">
-                        <div class="font-bold text-white">Pedido #${escapeHtml(String(order.id).slice(0, 8).toUpperCase())} ${expired ? '<span class="text-[10px] text-red-400">(expirado)</span>' : ''}</div>
+                        <div class="font-bold text-white">Pedido #${escapeHtml(String(order.id).slice(0, 8).toUpperCase())} ${order.status === 'cancelled' ? '<span class="text-[10px] text-red-400">(cancelado pelo cliente)</span>' : expired ? '<span class="text-[10px] text-red-400">(expirado)</span>' : ''}</div>
                         <div class="text-xs text-slate-400 mt-1">${escapeHtml(order.customer_name || 'Cliente')}</div>
                         ${order.customer_phone ? `
                             <div class="text-xs text-slate-500 mt-1">📱 ${escapeHtml(order.customer_phone)}

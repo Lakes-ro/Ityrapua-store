@@ -97,19 +97,22 @@ const APP = {
     },
 
     _bindOpenSales() {
-        const openSales = () => {
+        const open = (hash) => {
+            if (hash === '#moderacao' && this.auth?.isSupreme?.()) { this.navigation.showTab('moderation'); return; }
             if (this.auth?.hasSellerTools?.()) this.navigation.showTab('bi');
             else if (this.auth?.isSupreme?.()) this.navigation.showTab('admin');
             else this.auth?.openAuthModal('login');
         };
-        if (location.hash === '#vendas') {
+        if (location.hash === '#vendas' || location.hash === '#moderacao') {
+            const h = location.hash;
             history.replaceState(null, '', location.pathname + location.search);
-            openSales();
+            open(h);
         }
         navigator.serviceWorker?.addEventListener('message', (e) => {
-            if (e.data?.type === 'OPEN_SALES') openSales();
+            if (e.data?.type === 'OPEN_SALES') open(e.data.hash || '#vendas');
         });
     },
+
 
     /**
      * Tudo que muda quando alguém entra, sai ou troca de cargo.
