@@ -47,6 +47,7 @@ const Auth = {
             }
             this.renderUIByRole();
             this._checkPixKeyReminder();
+            this._handleAuthLink();
         } catch (err) {
             log(`❌ Erro auth: ${err.message}`, 'error');
             this.role = 'client';
@@ -56,15 +57,82 @@ const Auth = {
     _bindAuthListener() {
         if (this._authListenerBound) return;
         this._authListenerBound = true;
-        _supabase.auth.onAuthStateChange((event) => {
-            if (event === 'PASSWORD_RECOVERY') {
-                setTimeout(() => this.openNewPasswordModal(), 300);
-            }
-        });
-        // Link de recuperação chegou com #type=recovery na URL
-        if (/type=recovery/.test(window.location.hash)) {
-            setTimeout(() => this.openNewPasswordModal(), 800);
+        this._addPasswordToggles();
+    },
+
+    /**
+     * Pessoa chegou pelo link do e-mail. O evento PASSWORD_RECOVERY é
+     * capturado em config.js (window.AUTH_LINK) logo que o cliente nasce.
+     */
+    _handleAuthLink() {
+        const link = window.AUTH_LINK;
+        if (!link || link.handled || (!link.type && !link.error)) return;
+        link.handled = true;
+
+        // tira tokens/erros da barra de endereço
+        try {
+            const url = new URL(location.href);
+            ['error', 'error_code', 'error_description', 'type', 'code'].forEach(k => url.searchParams.delete(k));
+            history.replaceState(null, '', url.pathname + (url.searchParams.toString() ? `?${url.searchParams}` : ''));
+        } catch { /* ignora */ }
+
+        if (link.error) {
+            const expired = /expired|otp|invalid|denied/i.test(`${link.error} ${link.errorDescription || ''}`);
+            setTimeout(() => {
+                alert(expired
+                    ? '⚠️ Este link expirou ou já foi usado.\n\nSe era confirmação de cadastro, tente entrar com seu e-mail e senha — se ainda não estiver confirmado, você pode pedir um novo e-mail.\nSe era troca de senha, peça um novo link na aba SENHA.'
+                    : `⚠️ Não foi possível usar este link: ${link.errorDescription || link.error}`);
+                this.openAuthModal('login');
+            }, 400);
+            return;
         }
+
+        if (link.type === 'recovery') {
+            setTimeout(() => this.openNewPasswordModal(), 300);
+            return;
+        }
+
+        if (['signup', 'email', 'invite', 'magiclink', 'email_change'].includes(link.type)) {
+            setTimeout(() => {
+                alert(this.session
+                    ? `✅ E-mail confirmado! Você já está conectado${this.profile?.full_name ? `, ${this.profile.full_name.split(' ')[0]}` : ''}.`
+                    : '✅ E-mail confirmado! Agora é só entrar com seu e-mail e senha.');
+                if (!this.session) this.openAuthModal('login');
+            }, 400);
+        }
+    },
+
+    // ── Olhinho de mostrar/ocultar senha ───────────────────────
+    _addPasswordToggles() {
+        const EYE = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>';
+        const EYE_OFF = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 19c-6.5 0-10-7-10-7a18.5 18.5 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c6.5 0 10 7 10 7a18.5 18.5 0 0 1-2.16 3.19"/><path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/><line x1="2" y1="2" x2="22" y2="22"/></svg>';
+
+        document.querySelectorAll('input[type="password"]').forEach((input) => {
+            if (input.dataset.pwToggle) return;
+            input.dataset.pwToggle = '1';
+
+            const wrap = document.createElement('div');
+            wrap.className = 'pw-wrap';
+            input.parentNode.insertBefore(wrap, input);
+            wrap.appendChild(input);
+            input.classList.add('pw-input');
+
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'pw-toggle';
+            btn.setAttribute('aria-label', 'Mostrar senha');
+            btn.title = 'Mostrar senha';
+            btn.innerHTML = EYE;
+            btn.addEventListener('click', () => {
+                const show = input.type === 'password';
+                input.type = show ? 'text' : 'password';
+                btn.innerHTML = show ? EYE_OFF : EYE;
+                btn.setAttribute('aria-label', show ? 'Ocultar senha' : 'Mostrar senha');
+                btn.title = show ? 'Ocultar senha' : 'Mostrar senha';
+                input.focus();
+            });
+            wrap.appendChild(btn);
+        });
     },
 
     async loadProfile() {
@@ -218,6 +286,7 @@ const Auth = {
             bLogout?.classList.add('hidden');
         }
         if (window.lucide) lucide.createIcons();
+        window.APP?.navigation?.updateBottomNavHints?.();
     },
 
     // ── Helpers ─────────────────────────────────────────────
@@ -438,9 +507,14 @@ const Auth = {
             this.closeAuthModal();
         } catch (err) {
             log(`❌ Erro login: ${err.message}`, 'error');
-            alert(/confirm/i.test(err.message)
-                ? '❌ Confirme seu email antes de entrar (veja a caixa de entrada e o spam).'
-                : '❌ Email ou senha incorretos');
+            if (/confirm/i.test(err.message)) {
+                this.closeAuthModal();
+                this.showCheckEmailModal(email);
+            } else if (/rate|too many|seconds/i.test(err.message)) {
+                alert('⏳ Muitas tentativas. Espere um minuto e tente de novo.');
+            } else {
+                alert('❌ Email ou senha incorretos');
+            }
         } finally {
             if (btn) { btn.disabled = false; btn.innerText = 'ENTRAR'; }
         }
@@ -469,18 +543,139 @@ const Auth = {
             if (error) throw error;
             if (!data?.user) throw new Error('Usuário não foi criado');
 
-            alert('✅ Cadastro realizado!\nVerifique seu email para confirmar.');
             this.closeAuthModal();
+
+            // Confirmação de e-mail desligada no Supabase: já volta logado
+            if (data.session) {
+                await this.init();
+                await window.APP?.onAuthChanged?.();
+                alert(`✅ Conta criada! Bem-vindo(a), ${fullName.split(' ')[0]}.`);
+                return;
+            }
+
             setTimeout(() => this.showLoginTab(), 500);
+            this.showCheckEmailModal(email);
         } catch (err) {
             log(`❌ Erro signup: ${err.message}`, 'error');
-            alert(`❌ Erro: ${err.message}`);
+            if (/rate limit|too many|seconds/i.test(err.message)) {
+                alert('⏳ Muitos cadastros em pouco tempo. Espere alguns minutos e tente de novo.');
+            } else if (/already registered|already exists/i.test(err.message)) {
+                alert('ℹ️ Este e-mail já tem conta. Use a aba LOGIN (ou SENHA se esqueceu).');
+            } else {
+                alert(`❌ Erro: ${err.message}`);
+            }
         } finally {
             if (btn) { btn.disabled = false; btn.innerText = 'CADASTRAR'; }
         }
     },
 
     // ── Esqueci a senha ─────────────────────────────────────
+    // ── Aviso grande "Confirme seu e-mail" ─────────────────────
+    showCheckEmailModal(email) {
+        document.getElementById('check-email-modal')?.remove();
+        this._injectCheckEmailStyles();
+
+        const domain = String(email || '').split('@')[1]?.toLowerCase() || '';
+        const inbox = {
+            'gmail.com': ['Abrir Gmail', 'https://mail.google.com/'],
+            'hotmail.com': ['Abrir Outlook', 'https://outlook.live.com/mail/'],
+            'outlook.com': ['Abrir Outlook', 'https://outlook.live.com/mail/'],
+            'live.com': ['Abrir Outlook', 'https://outlook.live.com/mail/'],
+            'yahoo.com': ['Abrir Yahoo Mail', 'https://mail.yahoo.com/'],
+            'yahoo.com.br': ['Abrir Yahoo Mail', 'https://mail.yahoo.com/'],
+            'icloud.com': ['Abrir iCloud Mail', 'https://www.icloud.com/mail']
+        }[domain];
+
+        const modal = document.createElement('div');
+        modal.id = 'check-email-modal';
+        modal.className = 'ce-overlay';
+        modal.innerHTML = `
+            <div class="ce-box" role="dialog" aria-modal="true" aria-labelledby="ce-title">
+                <div class="ce-icon">📧</div>
+                <h2 id="ce-title" class="ce-title">Confirme seu e-mail</h2>
+                <p class="ce-lead">Falta só 1 passo! Enviamos um link de confirmação para:</p>
+                <div class="ce-email">${escapeHtml(email)}</div>
+                <ol class="ce-steps">
+                    <li><b>Abra seu e-mail</b> e procure a mensagem de confirmação</li>
+                    <li><b>Clique no link</b> dentro dela</li>
+                    <li>Pronto! Você volta pra loja <b>já conectado</b></li>
+                </ol>
+                <div class="ce-warn">⚠️ Não achou? Olhe na pasta <b>Spam</b> ou <b>Promoções</b>. Pode levar alguns minutos.</div>
+                ${inbox ? `<a class="ce-btn ce-btn-main" href="${inbox[1]}" target="_blank" rel="noopener">${inbox[0]}</a>` : ''}
+                <button type="button" class="ce-btn ce-btn-ghost" data-ce="resend">Reenviar e-mail</button>
+                <button type="button" class="ce-btn ce-btn-link" data-ce="close">Entendi</button>
+            </div>`;
+        document.body.appendChild(modal);
+
+        modal.addEventListener('click', async (e) => {
+            const act = e.target.closest('[data-ce]')?.getAttribute('data-ce');
+            if (act === 'close' || e.target === modal) modal.remove();
+            if (act === 'resend') {
+                const btn = e.target.closest('button');
+                btn.disabled = true;
+                btn.textContent = '⏳ Reenviando...';
+                await this.resendConfirmation(email);
+                btn.disabled = false;
+                btn.textContent = 'Reenviar e-mail';
+            }
+        });
+    },
+
+    _injectCheckEmailStyles() {
+        if (document.getElementById('ce-styles')) return;
+        const st = document.createElement('style');
+        st.id = 'ce-styles';
+        st.textContent = `
+            .ce-overlay { position: fixed; inset: 0; z-index: 500; background: rgba(0,0,0,.8); backdrop-filter: blur(6px);
+                display: flex; align-items: center; justify-content: center; padding: 16px; }
+            .ce-box { width: 100%; max-width: 460px; max-height: 94vh; overflow-y: auto; text-align: center;
+                background: #161b2c; color: #e2e8f0; border: 2px solid rgba(59,130,246,.5); border-radius: 28px;
+                padding: 32px 24px 22px; box-shadow: 0 25px 60px rgba(0,0,0,.5); animation: ce-pop .25s ease-out; }
+            @keyframes ce-pop { from { transform: scale(.92); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+            .ce-icon { font-size: 72px; line-height: 1; margin-bottom: 12px; animation: ce-bounce 1.6s ease-in-out infinite; }
+            @keyframes ce-bounce { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-8px); } }
+            .ce-title { font-size: 30px; font-weight: 900; color: #fff; margin: 0 0 10px; line-height: 1.15; }
+            .ce-lead { font-size: 17px; color: #cbd5e1; margin: 0 0 12px; }
+            .ce-email { font-size: 18px; font-weight: 800; color: #60a5fa; background: rgba(59,130,246,.12);
+                border-radius: 14px; padding: 12px; word-break: break-all; margin-bottom: 18px; }
+            .ce-steps { text-align: left; font-size: 16px; line-height: 1.5; color: #e2e8f0; margin: 0 0 16px; padding-left: 26px; }
+            .ce-steps li { margin-bottom: 6px; list-style: decimal; }
+            .ce-steps li::marker { color: #60a5fa; font-weight: 900; }
+            .ce-warn { font-size: 15px; line-height: 1.45; color: #fde68a; background: rgba(234,179,8,.12);
+                border: 1px solid rgba(234,179,8,.35); border-radius: 14px; padding: 12px 14px; margin-bottom: 18px; text-align: left; }
+            .ce-btn { display: block; width: 100%; box-sizing: border-box; padding: 15px; border-radius: 16px; font-size: 17px;
+                font-weight: 900; margin-top: 10px; text-decoration: none; cursor: pointer; border: none; }
+            .ce-btn:disabled { opacity: .6; }
+            .ce-btn-main { background: #2563eb; color: #fff; }
+            .ce-btn-ghost { background: rgba(148,163,184,.14); color: #e2e8f0; }
+            .ce-btn-link { background: transparent; color: #94a3b8; font-size: 16px; }
+            html[data-theme="light"] .ce-box { background: #fff; color: #0f172a; }
+            html[data-theme="light"] .ce-title { color: #0f172a; }
+            html[data-theme="light"] .ce-lead, html[data-theme="light"] .ce-steps { color: #334155; }
+            html[data-theme="light"] .ce-email { color: #1d4ed8; background: #eff6ff; }
+            html[data-theme="light"] .ce-warn { color: #854d0e; background: #fefce8; border-color: #fde047; }
+            html[data-theme="light"] .ce-btn-ghost { background: #f1f5f9; color: #0f172a; }
+            html[data-theme="light"] .ce-btn-link { color: #64748b; }
+        `;
+        document.head.appendChild(st);
+    },
+
+    async resendConfirmation(email) {
+        try {
+            const { error } = await _supabase.auth.resend({
+                type: 'signup',
+                email,
+                options: { emailRedirectTo: this._redirectUrl() }
+            });
+            if (error) throw error;
+            alert('✅ E-mail de confirmação reenviado!\nAbra o link que chegou (veja também o spam).');
+        } catch (err) {
+            alert(/rate|seconds|too many/i.test(err.message)
+                ? '⏳ Um e-mail acabou de ser enviado. Espere alguns minutos antes de pedir outro.'
+                : `❌ Não foi possível reenviar: ${err.message}`);
+        }
+    },
+
     async resetPasswordDirect() {
         const input = document.getElementById('forgot-email');
         const email = input?.value?.trim();
@@ -498,7 +693,9 @@ const Auth = {
             setTimeout(() => this.showLoginTab(), 1500);
         } catch (err) {
             log(`❌ Erro ao enviar email: ${err.message}`, 'error');
-            alert(`❌ Erro: ${err.message}`);
+            alert(/rate|seconds|too many/i.test(err.message)
+                ? '⏳ Muitos e-mails pedidos em pouco tempo. Espere alguns minutos e tente de novo.'
+                : `❌ Erro: ${err.message}`);
         } finally {
             if (btn) { btn.disabled = false; btn.innerText = '📧 ENVIAR LINK DE RECUPERAÇÃO'; }
         }

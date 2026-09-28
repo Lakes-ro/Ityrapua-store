@@ -186,6 +186,22 @@ if (typeof window.CONFIG_LOADED !== 'undefined') {
     window._supabase = null;
     window.SUPABASE_READY = false;
 
+    // Link vindo de e-mail (confirmação de cadastro, recuperação de senha, erro).
+    // Precisa ser lido ANTES de criar o cliente: o Supabase limpa a URL ao processar.
+    window.AUTH_LINK = (function () {
+        try {
+            const h = new URLSearchParams(location.hash.replace(/^#/, ''));
+            const q = new URLSearchParams(location.search);
+            const get = (k) => h.get(k) || q.get(k);
+            return {
+                type: get('type'),
+                error: get('error_code') || get('error'),
+                errorDescription: get('error_description'),
+                handled: false
+            };
+        } catch { return { handled: false }; }
+    })();
+
     function initSupabase() {
         if (!window.supabase || !window.supabase.createClient) return false;
         try {
@@ -193,6 +209,14 @@ if (typeof window.CONFIG_LOADED !== 'undefined') {
                 window.CONFIG.SUPABASE_URL,
                 window.CONFIG.SUPABASE_KEY
             );
+            // registrado já na criação pra não perder o evento do link de recuperação
+            window._supabase.auth.onAuthStateChange((event) => {
+                if (event === 'PASSWORD_RECOVERY') {
+                    window.AUTH_LINK.type = 'recovery';
+                    window.AUTH_LINK.handled = false;
+                    window.APP?.auth?._handleAuthLink?.();
+                }
+            });
             return !!window._supabase;
         } catch (err) {
             console.error('Erro ao criar cliente Supabase:', err);

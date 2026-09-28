@@ -43,6 +43,8 @@ const Products = {
     _allCategories: [],
     _bulkTiers: [],
     searchQuery: '',
+    vendorFilter: null,      // { id, name } — "ver todos os produtos deste vendedor"
+    _vendorMatches: [],
     showFavoritesOnly: false,
 
     _page: 0,
@@ -270,12 +272,22 @@ const Products = {
 
             let query = this._baseQuery();
             if (this.activeCategory !== 'Todas') query = query.eq('category', this.activeCategory);
+            if (this.vendorFilter?.id) query = query.eq('owner_id', this.vendorFilter.id);
 
-            const q = this.searchQuery.trim();
-            if (q) {
-                // tira caracteres que quebram o filtro OR do PostgREST
-                const safe = q.replace(/[%,()*\\]/g, ' ').trim();
-                if (safe) query = query.or(`name.ilike.%${safe}%,description.ilike.%${safe}%`);
+            // Busca sem diferença de maiúscula/minúscula nem acento ("pao" acha "Pão"),
+            // e cada palavra pode estar em qualquer ordem ("chocolate recheado").
+            // O banco guarda products.search_norm já sem acento (gatilho).
+            const safe = this._normalizeSearch(this.searchQuery);
+            if (reset) this._vendorMatches = safe ? await this._findVendors(safe) : [];
+            if (token !== this._requestToken) return;
+            if (safe) {
+                const words = safe.split(' ').filter(Boolean).slice(0, 6);
+                const allWords = words.map(w => `search_norm.ilike.%${w}%`).join(',');
+                const ors = [words.length > 1 ? `and(${allWords})` : allWords];
+                if (this._vendorMatches.length && !this.vendorFilter) {
+                    ors.push(`owner_id.in.(${this._vendorMatches.map(v => v.id).join(',')})`);
+                }
+                query = query.or(ors.join(','));
             }
 
             const { data, error } = await query.order('created_at', { ascending: false }).range(from, to);
@@ -423,11 +435,12 @@ const Products = {
             if (!grid) return;
 
             this._renderCategoryFilterBar();
+            this._renderVendorBar();
             const list = this.products;
 
             if (!list || !list.length) {
                 const q = this.searchQuery.trim();
-                const isTrulyEmpty = !q && !this.showFavoritesOnly && this.activeCategory === 'Todas';
+                const isTrulyEmpty = !q && !this.showFavoritesOnly && this.activeCategory === 'Todas' && !this.vendorFilter;
 
                 if (isTrulyEmpty) {
                     grid.innerHTML = `
@@ -439,7 +452,9 @@ const Products = {
                         </div>`;
                 } else {
                     const msg = q
-                        ? `Nenhum produto encontrado para "${escapeHtml(q)}"`
+                        ? (this._vendorMatches?.length ? `Nenhum produto com "${escapeHtml(q)}" no nome — veja os vendedores acima` : `Nenhum produto encontrado para "${escapeHtml(q)}"`)
+                        : this.vendorFilter
+                            ? `${escapeHtml(this.vendorFilter.name)} não tem produtos${this.activeCategory !== 'Todas' ? ` em "${escapeHtml(this.activeCategory)}"` : ''} no momento`
                         : this.showFavoritesOnly
                             ? 'Você ainda não favoritou nenhum produto'
                             : `Nenhum produto em "${escapeHtml(this.activeCategory)}" no momento`;
@@ -506,7 +521,7 @@ const Products = {
 
                 <div class="flex items-center gap-2 bg-white/10 px-3 py-2 rounded-lg border border-white/5">
                     <i data-lucide="store" class="w-3 h-3 text-yellow-500"></i>
-                    <span class="text-xs text-yellow-300 font-semibold truncate">Vendido por: ${vendedor}</span>
+                    <button type="button" data-product-action="vendor" data-vendor-id="${escapeHtml(p.owner_id || '')}" data-vendor-name="${vendedor}" class="vendor-link text-xs text-yellow-300 font-semibold truncate" title="Ver todos os produtos de ${vendedor}">Vendido por: <u>${vendedor}</u></button>
                 </div>
 
                 <div class="flex justify-between items-center">
@@ -641,6 +656,7 @@ const Products = {
             if (action === 'category') this.filterByCategory(el.dataset.category);
             else if (action === 'favorites') this.toggleShowFavorites();
             else if (action === 'favorite') this.toggleFavorite(el.dataset.id);
+            else if (action === 'vendor') { e.stopPropagation(); this.showVendor(el.dataset.vendorId, el.dataset.vendorName); }
             else if (action === 'become-seller') {
                 const auth = window.APP?.auth;
                 if (auth?.isLoggedIn()) auth.becomeSeller(); else auth?.openAuthModal('signup');
@@ -719,6 +735,119 @@ const Products = {
         this._fetchStorefrontPage(true);
     },
 
+    /** minúsculo, sem acento, sem caracteres que quebram o filtro do PostgREST */
+    _normalizeSearch(text) {
+        return String(text || '')
+            .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+            .toLowerCase()
+            .replace(/[%,()*\\"'.:]/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+    },
+
+    /** Vendedores cujo nome combina com a busca (e que têm produto no ar). */
+    async _findVendors(term) {
+        try {
+            const { data: people, error } = await _supabase
+                .from('profiles')
+                .select('id, full_name')
+                .in('role', ['seller', 'supreme'])
+                .ilike('name_norm', `%${term}%`)
+                .limit(8);
+            if (error || !people?.length) return [];
+
+            const { data: prods } = await _supabase
+                .from('products')
+                .select('owner_id')
+                .eq('active', true)
+                .in('owner_id', people.map(p => p.id));
+            const count = {};
+            (prods || []).forEach(r => { count[r.owner_id] = (count[r.owner_id] || 0) + 1; });
+
+            return people
+                .filter(p => count[p.id])
+                .map(p => ({ id: p.id, name: p.full_name || 'Vendedor', total: count[p.id] }));
+        } catch {
+            return [];
+        }
+    },
+
+    /** Faixa acima dos produtos: vendedores encontrados / filtro de vendedor ativo. */
+    _renderVendorBar() {
+        const grid = document.getElementById('product-grid');
+        if (!grid) return;
+        let bar = document.getElementById('search-vendor-bar');
+        if (!bar) {
+            bar = document.createElement('div');
+            bar.id = 'search-vendor-bar';
+            grid.parentNode.insertBefore(bar, grid);
+            bar.addEventListener('click', (e) => {
+                const pick = e.target.closest('[data-vendor-pick]');
+                if (pick) {
+                    this.showVendor(pick.dataset.vendorPick, pick.dataset.vendorName);
+                    return;
+                }
+                if (e.target.closest('[data-vendor-clear]')) this.clearVendorFilter();
+            });
+        }
+
+        if (this.vendorFilter) {
+            bar.innerHTML = `
+                <div class="svb-active">
+                    <span>👤 Produtos de <b>${escapeHtml(this.vendorFilter.name)}</b></span>
+                    <button type="button" data-vendor-clear aria-label="Ver todos os produtos">✕ Ver todos</button>
+                </div>`;
+            bar.classList.remove('hidden');
+            return;
+        }
+
+        const list = this._vendorMatches || [];
+        if (!this.searchQuery.trim() || !list.length) {
+            bar.innerHTML = '';
+            bar.classList.add('hidden');
+            return;
+        }
+        bar.innerHTML = `
+            <div class="svb-label">Vendedores encontrados</div>
+            <div class="svb-chips">
+                ${list.map(v => `
+                    <button type="button" class="svb-chip" data-vendor-pick="${escapeHtml(v.id)}" data-vendor-name="${escapeHtml(v.name)}">
+                        <span class="svb-avatar">${escapeHtml((v.name || '?').trim().charAt(0).toUpperCase())}</span>
+                        <span class="svb-name">${escapeHtml(v.name)}</span>
+                        <span class="svb-count">${v.total} produto${v.total > 1 ? 's' : ''}</span>
+                    </button>`).join('')}
+            </div>`;
+        bar.classList.remove('hidden');
+    },
+
+    /** Mostra só os produtos de um vendedor (chip da busca ou nome no produto). */
+    showVendor(id, name) {
+        if (!id) return;
+        this.vendorFilter = { id, name: name || 'Vendedor' };
+        const input = document.getElementById('market-search-input');
+        if (input) input.value = '';
+        this.searchQuery = '';
+        document.getElementById('market-search-clear')?.classList.add('hidden');
+        this._fetchStorefrontPage(true);
+        this._scrollToResults();
+    },
+
+    clearVendorFilter() {
+        this.vendorFilter = null;
+        this._fetchStorefrontPage(true);
+    },
+
+    _scrollToResults() {
+        const anchor = document.getElementById('category-filter-bar') || document.getElementById('product-grid');
+        if (!anchor) return;
+        const top = anchor.getBoundingClientRect().top;
+        if (top > window.innerHeight * 0.6 || top < 0) {
+            const bar = document.getElementById('market-search-bar');
+            const offset = (bar?.offsetHeight || 0) + 16;
+            window.scrollTo({ top: window.scrollY + top - offset, behavior: 'smooth' });
+        }
+    },
+
     _bindSearch() {
         if (this._searchBound) return;
         const input = document.getElementById('market-search-input');
@@ -729,9 +858,14 @@ const Products = {
         let timer = null;
         const run = () => {
             this.searchQuery = input.value;
+            if (input.value.trim()) this.vendorFilter = null;
             clearBtn?.classList.toggle('hidden', !input.value);
             this._fetchStorefrontPage(true);
+            if (input.value.trim()) this._scrollToResults();
         };
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); clearTimeout(timer); run(); input.blur(); }
+        });
         input.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(run, 350); });
         clearBtn?.addEventListener('click', () => {
             input.value = '';
@@ -1220,16 +1354,31 @@ const Products = {
         if (!img) return;
 
         const deg = ((this._previewRotation % 360) + 360) % 360;
+        const wrapEl = img.parentElement;
+        const reset = () => {
+            ['transform', 'objectFit', 'position', 'left', 'top', 'width', 'height', 'maxWidth', 'maxHeight'].forEach(k => { img.style[k] = ''; });
+            if (wrapEl) wrapEl.style.height = '';
+        };
+
         if (deg === 0) {
-            img.style.transform = '';
-            img.style.objectFit = '';
+            reset();
         } else {
-            // Mostra a foto inteira enquanto está girada (pra conferir o resultado)
-            const wrap = img.parentElement.getBoundingClientRect();
+            // Trava a altura da área e encaixa a foto girada ocupando o máximo de espaço
+            if (wrapEl && !wrapEl.style.height) {
+                wrapEl.style.height = `${Math.round(wrapEl.getBoundingClientRect().height)}px`;
+            }
+            const box = wrapEl.getBoundingClientRect();
             const sideways = deg === 90 || deg === 270;
-            const scale = sideways && wrap.width && wrap.height ? Math.min(wrap.width / wrap.height, wrap.height / wrap.width) : 1;
+            img.style.position = 'absolute';
+            img.style.left = '50%';
+            img.style.top = '50%';
+            img.style.maxWidth = 'none';
+            img.style.maxHeight = 'none';
             img.style.objectFit = 'contain';
-            img.style.transform = `rotate(${deg}deg) scale(${scale})`;
+            // de lado: a caixa da foto troca largura por altura antes de girar
+            img.style.width = `${sideways ? box.height : box.width}px`;
+            img.style.height = `${sideways ? box.width : box.height}px`;
+            img.style.transform = `translate(-50%, -50%) rotate(${deg}deg)`;
         }
         img.style.transition = 'transform .25s ease';
 
@@ -1277,11 +1426,41 @@ const Products = {
         }
     },
 
+    /**
+     * Baixa a foto publicada. Tenta 3 caminhos, porque em alguns aparelhos
+     * (internet instável, cache do navegador, bloqueador) o primeiro falha.
+     */
+    async _loadImageBlob(url) {
+        const bust = (u) => `${u}${u.includes('?') ? '&' : '?'}rot=${Date.now()}`;
+
+        // 1) download direto
+        try {
+            const res = await fetch(url, { mode: 'cors', credentials: 'omit' });
+            if (res.ok) return await res.blob();
+        } catch { /* tenta o próximo */ }
+
+        // 2) mesmo endereço sem reaproveitar o cache do navegador
+        try {
+            const res = await fetch(bust(url), { mode: 'cors', credentials: 'omit', cache: 'reload' });
+            if (res.ok) return await res.blob();
+        } catch { /* tenta o próximo */ }
+
+        // 3) pelo Storage do Supabase (usa o login)
+        try {
+            const m = String(url).match(/\/object\/public\/([^/]+)\/(.+?)(\?.*)?$/);
+            if (m) {
+                const { data, error } = await _supabase.storage.from(m[1]).download(decodeURIComponent(m[2]));
+                if (!error && data) return data;
+            }
+        } catch { /* sem mais opções */ }
+
+        throw new Error('não consegui baixar a foto. Confira a internet e tente de novo em alguns segundos.');
+    },
+
     /** Baixa a foto já publicada, gira, sobe a versão nova e troca no produto. */
     async _replaceMediaRotated(media, productId, degrees) {
-        const res = await fetch(media.media_url, { cache: 'no-store' });
-        if (!res.ok) throw new Error(`Não foi possível baixar a foto (HTTP ${res.status})`);
-        const rotated = await this._rotateImageFile(await res.blob(), degrees, 'foto-girada.jpg');
+        const original = await this._loadImageBlob(media.media_url);
+        const rotated = await this._rotateImageFile(original, degrees, 'foto-girada.jpg');
         const upload = await compressImage(rotated);
 
         const userId = window.APP.auth.userId;
@@ -1309,16 +1488,19 @@ const Products = {
         const btn = document.getElementById('preview-rotate-save');
         if (btn) { btn.disabled = true; btn.textContent = '⏳ Salvando...'; }
         try {
+            const oldUrl = media.media_url;
             const newUrl = await this._replaceMediaRotated(media, product.id, deg);
             media.media_url = newUrl;
             [this.manageProducts, this.products].forEach(list => list.forEach(p => {
                 (p.product_media || []).forEach(m => { if (m.id === media.id) m.media_url = newUrl; });
+                if (p.image_url === oldUrl) p.image_url = newUrl;   // capa (o banco já troca sozinho)
             }));
             this._previewRotation = 0;
             this._renderPreviewMedia();
             this.render();
             this.renderAdmin();
             this.renderSeller();
+            alert('✅ Foto salva! Agora todos os clientes veem a foto nessa posição.');
         } catch (err) {
             alert(`❌ Não foi possível salvar a foto girada: ${err.message}`);
         } finally {

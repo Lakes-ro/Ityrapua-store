@@ -200,14 +200,36 @@ const VendorSettings = {
         }
 
         list.innerHTML = this.pixKeys.map((k, i) => `
-            <div class="flex gap-2 items-center" data-pix-row="${i}">
-                <input type="text" data-pix-label maxlength="30" placeholder="Nome (ex: Nubank)" value="${escapeHtml(k.label || '')}"
-                    class="w-28 sm:w-36 flex-shrink-0 p-3 rounded-xl bg-slate-800 border border-white/10 text-white text-sm">
-                <input type="text" data-pix-key maxlength="80" placeholder="CPF, telefone, e-mail ou chave aleatória" value="${escapeHtml(k.pix_key || '')}"
-                    class="flex-1 min-w-0 p-3 rounded-xl bg-slate-800 border border-white/10 text-white text-sm font-mono">
-                <button type="button" data-pix-remove="${i}" aria-label="Remover chave"
-                    class="flex-shrink-0 w-9 h-9 rounded-xl bg-red-600/20 hover:bg-red-600/30 text-red-400 font-black">✕</button>
+            <div class="pix-card" data-pix-row="${i}">
+                <div class="pix-card-head">
+                    <span class="pix-card-title">🔑 Chave ${i + 1}</span>
+                    <button type="button" data-pix-remove="${i}" class="pix-card-remove" aria-label="Remover chave ${i + 1}">🗑️ Remover</button>
+                </div>
+                <label class="pix-field-label" for="pix-label-${i}">Nome da chave <span>(opcional)</span></label>
+                <input id="pix-label-${i}" type="text" data-pix-label maxlength="30" placeholder="Ex.: Nubank, Caixa, Celular"
+                    value="${escapeHtml(k.label || '')}" class="pix-input">
+                <label class="pix-field-label" for="pix-key-${i}">Chave Pix</label>
+                <input id="pix-key-${i}" type="text" data-pix-key maxlength="80" inputmode="text" autocomplete="off" spellcheck="false"
+                    placeholder="CPF, celular, e-mail ou chave aleatória" value="${escapeHtml(k.pix_key || '')}" class="pix-input pix-input-key">
+                <div class="pix-type ${this._pixKeyType(k.pix_key).startsWith('⚠️') ? 'warn' : ''}" data-pix-type>${escapeHtml(this._pixKeyType(k.pix_key))}</div>
             </div>`).join('');
+    },
+
+    /** Mostra que tipo de chave a pessoa digitou (ajuda a pegar erro de digitação). */
+    _pixKeyType(value) {
+        const v = String(value || '').trim();
+        if (!v) return '';
+        const digits = v.replace(/\D/g, '');
+        if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) return '✅ E-mail';
+        if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v)) return '✅ Chave aleatória';
+        if (/^\+?[\d\s().-]+$/.test(v)) {
+            if (digits.length === 14) return '✅ CNPJ';
+            if (digits.length === 11) return /^\+?55/.test(v) ? '✅ Celular' : '✅ CPF ou celular (confira)';
+            if (digits.length === 13 && digits.startsWith('55')) return '✅ Celular';
+            if (digits.length === 10) return '⚠️ Celular sem o 9? Confira o número';
+            return `⚠️ ${digits.length} números — confira se está completo`;
+        }
+        return '⚠️ Formato não reconhecido — confira a chave';
     },
 
     // ── Fechar a loja inteira (Admin com permissão) ─────────────
@@ -338,6 +360,13 @@ const VendorSettings = {
         document.getElementById('vendor-save-schedule-btn')?.addEventListener('click', () => this.saveSchedule());
         document.getElementById('vendor-add-pix-btn')?.addEventListener('click', () => this.addPixKey());
         document.getElementById('vendor-save-pix-btn')?.addEventListener('click', () => this.savePixKeys());
+        document.getElementById('vendor-pix-keys-list')?.addEventListener('input', (e) => {
+            if (!e.target.matches('[data-pix-key]')) return;
+            const hint = e.target.closest('[data-pix-row]')?.querySelector('[data-pix-type]');
+            if (!hint) return;
+            hint.textContent = this._pixKeyType(e.target.value);
+            hint.classList.toggle('warn', hint.textContent.startsWith('⚠️'));
+        });
         document.getElementById('vendor-pix-keys-list')?.addEventListener('click', (e) => {
             const btn = e.target.closest('[data-pix-remove]');
             if (btn) this.removePixKey(Number(btn.dataset.pixRemove));

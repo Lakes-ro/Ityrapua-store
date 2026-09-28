@@ -18,6 +18,109 @@ const Navigation = {
         this._registerDataActionButtons();
         this._registerAuthTabs();
         this._registerForms();
+        this._initBottomNavHints();
+    },
+
+    // ============================================================
+    // BARRA DE BAIXO (celular): mostra que dá pra arrastar pro lado
+    // 1) degradê + seta na borda onde há mais botões
+    // 2) último botão visível fica cortado pela metade
+    // 3) uma "balançadinha" na primeira vez (1x por aparelho)
+    // ============================================================
+
+    BNAV_HINT_KEY: 'ityrapuan_bnav_swipe_hint_seen',
+
+    _initBottomNavHints() {
+        const nav = document.getElementById('bottom-nav');
+        if (!nav || this._bnavHintsReady) return;
+        this._bnavHintsReady = true;
+
+        const makeFade = (side) => {
+            const el = document.createElement('div');
+            el.className = `bnav-fade bnav-fade-${side}`;
+            el.setAttribute('aria-hidden', 'true');
+            el.innerHTML = `<span>${side === 'left' ? '‹' : '›'}</span>`;
+            document.body.appendChild(el);
+            return el;
+        };
+        this._bnavFadeL = makeFade('left');
+        this._bnavFadeR = makeFade('right');
+
+        let userScrolled = false;
+        nav.addEventListener('scroll', () => this._updateBnavFades(), { passive: true });
+        nav.addEventListener('touchstart', () => { userScrolled = true; this._markBnavHintSeen(); }, { passive: true });
+
+        let frame = 0;
+        const refresh = () => {
+            if (frame) return;
+            frame = requestAnimationFrame(() => { frame = 0; this.updateBottomNavHints(); });
+        };
+        window.addEventListener('resize', refresh);
+        if (window.ResizeObserver) new ResizeObserver(refresh).observe(nav);
+        // botões aparecem/somem conforme o cargo (ignora a própria classe da barra)
+        if (window.MutationObserver) {
+            new MutationObserver((list) => {
+                if (list.some(m => m.target !== nav)) refresh();
+            }).observe(nav, { subtree: true, attributes: true, attributeFilter: ['class'] });
+        }
+        this._bnavUserScrolled = () => userScrolled;
+        refresh();
+    },
+
+    updateBottomNavHints() {
+        const nav = document.getElementById('bottom-nav');
+        if (!nav || getComputedStyle(nav).display === 'none') { this._toggleBnavFades(false, false); return; }
+
+        // largura dos botões: se não couber tudo, deixa o último visível cortado ao meio
+        const buttons = [...nav.querySelectorAll('.bnav-btn')].filter(b => !b.classList.contains('hidden'));
+        const width = nav.clientWidth;
+        const MIN = 64;
+        if (buttons.length * MIN > width) {
+            const fit = Math.max(3, Math.floor(width / MIN));
+            nav.style.setProperty('--bnav-btn-w', `${Math.floor(width / (fit - 0.5))}px`);
+            nav.classList.add('bnav-overflow');
+        } else {
+            nav.style.removeProperty('--bnav-btn-w');
+            nav.classList.remove('bnav-overflow');
+        }
+
+        this._updateBnavFades();
+        this._maybeNudgeBottomNav();
+    },
+
+    _updateBnavFades() {
+        const nav = document.getElementById('bottom-nav');
+        if (!nav) return;
+        const max = nav.scrollWidth - nav.clientWidth;
+        const overflow = max > 4;
+        this._toggleBnavFades(overflow && nav.scrollLeft > 4, overflow && nav.scrollLeft < max - 4);
+        if (overflow && nav.scrollLeft >= max - 4) this._markBnavHintSeen();
+    },
+
+    _toggleBnavFades(left, right) {
+        this._bnavFadeL?.classList.toggle('show', !!left);
+        this._bnavFadeR?.classList.toggle('show', !!right);
+    },
+
+    _markBnavHintSeen() {
+        try { localStorage.setItem(this.BNAV_HINT_KEY, '1'); } catch { /* ignora */ }
+    },
+
+    _maybeNudgeBottomNav() {
+        const nav = document.getElementById('bottom-nav');
+        if (!nav || this._bnavNudged) return;
+        if (nav.scrollWidth - nav.clientWidth < 20) return;
+        try { if (localStorage.getItem(this.BNAV_HINT_KEY)) return; } catch { /* segue */ }
+        this._bnavNudged = true;
+
+        setTimeout(() => {
+            if (this._bnavUserScrolled?.() || document.hidden) return;
+            nav.scrollTo({ left: Math.min(90, nav.scrollWidth - nav.clientWidth), behavior: 'smooth' });
+            setTimeout(() => {
+                nav.scrollTo({ left: 0, behavior: 'smooth' });
+                this._markBnavHintSeen();
+            }, 900);
+        }, 1800);
     },
 
     _registerDataNavButtons() {

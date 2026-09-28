@@ -30,7 +30,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Sora:wght@600;700;800&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 
     <!-- ESTILOS -->
-    <link rel="stylesheet" href="css/style.css?v=43">
+    <link rel="stylesheet" href="css/style.css?v=49">
 
     <!-- Tailwind já compilado (só as classes usadas no projeto) -->
     <link rel="stylesheet" href="css/tailwind-built.css?v=43">
@@ -231,7 +231,7 @@
         <section id="market-section" class="animate-in">
             <div id="market-search-bar" class="mb-6">
                 <i data-lucide="search" class="market-search-icon"></i>
-                <input id="market-search-input" type="text" placeholder="Buscar produtos, categorias..." autocomplete="off">
+                <input id="market-search-input" type="search" placeholder="Buscar produto ou vendedor..." enterkeyhint="search" aria-label="Buscar produto ou vendedor" autocomplete="off">
                 <button id="market-search-clear" class="hidden" aria-label="Limpar busca">
                     <i data-lucide="x"></i>
                 </button>
@@ -655,20 +655,20 @@
 
             <div id="vendor-pix-key-section" class="bg-slate-900/50 p-6 rounded-2xl border border-white/5 mb-6">
                 <h3 class="text-lg font-black text-slate-300 mb-2">💳 Minhas Chaves Pix</h3>
-                <p class="text-xs text-slate-500 mb-4 leading-relaxed">
-                    São essas chaves que aparecem pro comprador na hora de pagar — cadastre quantas quiser (ex: uma do banco, outra do celular). Sem nenhuma cadastrada, a venda acontece do mesmo jeito, mas o comprador precisa te chamar no WhatsApp pra combinar o pagamento — o que atrasa (e às vezes derruba) a venda.
+                <p class="pix-intro">
+                    O comprador paga direto nestas chaves. Sem chave, ele precisa te chamar no WhatsApp pra combinar, e muita venda se perde aí.
                 </p>
                 <div id="vendor-pix-key-warning" class="hidden mb-4 p-3 rounded-xl bg-red-500/10 border border-red-500/30 text-xs text-red-300 font-bold">
                     ⚠️ Você ainda não cadastrou nenhuma chave Pix — cadastre agora pra não perder vendas.
                 </div>
 
-                <div id="vendor-pix-keys-list" class="space-y-3 mb-3"></div>
+                <div id="vendor-pix-keys-list" class="pix-list"></div>
 
-                <button type="button" id="vendor-add-pix-btn" class="w-full mb-3 py-2.5 rounded-xl border border-dashed border-green-500/40 text-green-300 text-xs font-bold hover:bg-green-500/10 transition-all">
+                <button type="button" id="vendor-add-pix-btn" class="pix-add-btn">
                     ➕ Adicionar outra chave Pix
                 </button>
 
-                <button type="button" id="vendor-save-pix-btn" class="w-full bg-green-600 hover:bg-green-500 text-white font-bold px-6 py-3 rounded-lg text-sm transition-all whitespace-nowrap">
+                <button type="button" id="vendor-save-pix-btn" class="pix-save-btn">
                     💾 Salvar Chaves Pix
                 </button>
             </div>
@@ -1100,21 +1100,21 @@
     <!-- ========================================
          SCRIPTS DO APP — a ordem importa (defer mantém a ordem)
          ======================================== -->
-    <script defer src="js/config.js?v=43"></script>
+    <script defer src="js/config.js?v=44"></script>
     <script defer src="js/storage.js?v=43"></script>
     <script defer src="js/image-zoom.js?v=43"></script>
-    <script defer src="js/auth.js?v=43"></script>
+    <script defer src="js/auth.js?v=47"></script>
     <script defer src="js/store-status.js?v=43"></script>
     <script defer src="js/cart.js?v=43"></script>
-    <script defer src="js/products.js?v=43"></script>
+    <script defer src="js/products.js?v=51"></script>
     <script defer src="js/ads.js?v=43"></script>
     <script defer src="js/bi.js?v=43"></script>
-    <script defer src="js/navigation.js?v=43"></script>
+    <script defer src="js/navigation.js?v=46"></script>
     <script defer src="js/tenants.js?v=43"></script>
     <script defer src="js/orders.js?v=43"></script>
     <script defer src="js/order-management.js?v=43"></script>
     <script defer src="js/admin-warnings.js?v=43"></script>
-    <script defer src="js/vendor-settings.js?v=43"></script>
+    <script defer src="js/vendor-settings.js?v=45"></script>
     <script defer src="js/notifications.js?v=43"></script>
     <script defer src="js/vendor-notices.js?v=43"></script>
     <script defer src="js/moderation.js?v=43"></script>
