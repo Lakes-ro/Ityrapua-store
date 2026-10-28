@@ -1,159 +1,192 @@
 /**
- * SW.JS v5.0 — Service Worker
- * Fica na RAIZ do site: um Service Worker só controla a pasta onde está.
- *  - Cache "rede primeiro": sempre tenta a versão nova; sem internet,
- *    usa a última cópia guardada.
- *  - Só guarda arquivos do próprio site (Supabase e CDNs vão direto).
- *  - Notificação push "🎉 Nova venda!" (ver js/notifications.js).
+ * SW.JS v6.0
+ * ✅ Estratégia Network First (mantida), agora SÓ para requisições do
+ *    mesmo domínio (não intercepta CDN, Supabase, extensões etc.).
+ * ✅ Pré-cache tolerante: um arquivo ausente não derruba o cache dos
+ *    outros (antes cache.addAll falhava inteiro se 1 arquivo desse 404).
+ * ✅ NOVO: handler de "push" (mostra a notificação mesmo com o app
+ *    fechado) e "notificationclick" (abre/foca o app na aba certa).
+ *    Payload esperado (JSON): { title, body, url, tag, icon }
+ * ✅ Fallback offline de navegação: devolve o index.html em cache.
  */
 
-const CACHE_NAME = 'marketplace-v6.6';
+const CACHE_VERSION = 'marketplace-v6.0';
+const CACHE_NAME = CACHE_VERSION;
 
 const ASSETS_TO_CACHE = [
     './',
     './index.html',
     './manifest.json',
-    './html/privacidade.html',
-    './css/style.css',
-    './css/tailwind-built.css',
-    './css/theme.css',
-    './img/icon-192.png',
-    './img/icon-512.png',
-    './img/icon-maskable-192.png',
-    './img/icon-maskable-512.png',
-    './js/sw-register.js',
-    './js/config.js',
-    './js/storage.js',
-    './js/image-zoom.js',
-    './js/auth.js',
-    './js/store-status.js',
-    './js/cart.js',
-    './js/products.js',
-    './js/ads.js',
-    './js/bi.js',
-    './js/navigation.js',
-    './js/tenants.js',
-    './js/orders.js',
-    './js/order-management.js',
-    './js/admin-warnings.js',
-    './js/vendor-settings.js',
-    './js/notifications.js',
-    './js/vendor-notices.js',
-    './js/moderation.js',
-    './js/image-optimizer.js',
-    './js/restock-alerts.js',
-    './js/onboarding.js',
-    './js/pwa.js',
-    './js/app.js',
-    './js/theme-toggle.js',
-    './js/home-extras.js'
+
+    './style.css',
+    './theme.css',
+    './tailwind.built.css',
+
+    './config.js',
+    './storage.js',
+    './wrapper.js',
+    './auth.js',
+    './store-status.js',
+    './cart.js',
+    './products.js',
+    './ads.js',
+    './bi.js',
+    './navigation.js',
+    './tenants.js',
+    './orders.js',
+    './order-management.js',
+    './admin-warnings.js',
+    './vendor-settings.js',
+    './notifications.js',
+    './moderation.js',
+    './restock-alerts.js',
+    './onboarding.js',
+    './pwa.js',
+    './app.js',
+    './theme-toggle.js',
+
+    './icon-192.png',
+    './icon-512.png'
 ];
 
+// ========================================
+// INSTALAR
+// ========================================
 self.addEventListener('install', (event) => {
+    console.log(`[SW] Instalando ${CACHE_VERSION}`);
+
     event.waitUntil(
         caches.open(CACHE_NAME).then((cache) =>
-            Promise.allSettled(ASSETS_TO_CACHE.map((url) => cache.add(url)))
+            Promise.allSettled(
+                ASSETS_TO_CACHE.map((asset) =>
+                    cache.add(asset).catch((err) => {
+                        console.warn(`[SW] Não cacheou ${asset}: ${err.message}`);
+                    })
+                )
+            )
         )
     );
+
     self.skipWaiting();
 });
 
+// ========================================
+// ATIVAR — limpa caches antigos
+// ========================================
 self.addEventListener('activate', (event) => {
+    console.log(`[SW] Ativando ${CACHE_VERSION}`);
+
     event.waitUntil(
-        caches.keys().then((names) => Promise.all(
-            names
-                .filter((n) => n !== CACHE_NAME && (n.startsWith('fadvendas-') || n.startsWith('marketplace-')))
-                .map((n) => caches.delete(n))
-        )).then(() => self.clients.claim())
+        caches.keys().then((names) =>
+            Promise.all(
+                names
+                    .filter((name) => name !== CACHE_NAME && (name.startsWith('fadvendas-') || name.startsWith('marketplace-')))
+                    .map((name) => caches.delete(name))
+            )
+        )
     );
+
+    self.clients.claim();
 });
 
+// ========================================
+// FETCH — NETWORK FIRST (somente mesmo domínio)
+// ========================================
 self.addEventListener('fetch', (event) => {
     const { request } = event;
+
     if (request.method !== 'GET') return;
 
     const url = new URL(request.url);
-    if (!url.protocol.startsWith('http')) return;
-    if (url.origin !== self.location.origin) return; // Supabase, CDNs etc. vão direto pra rede
 
-    event.respondWith(networkFirst(request));
+    if (!url.protocol.startsWith('http')) return;
+    if (url.origin !== self.location.origin) return; // CDN, Supabase, extensões: deixa passar direto
+
+    event.respondWith(networkFirstStrategy(request));
 });
 
-function fetchWithTimeout(request, ms) {
-    return new Promise((resolve, reject) => {
-        const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
-        const timer = setTimeout(() => {
-            controller?.abort();
-            reject(new Error('timeout'));
-        }, ms);
-        fetch(request, controller ? { signal: controller.signal } : undefined)
-            .then((res) => { clearTimeout(timer); resolve(res); })
-            .catch((err) => { clearTimeout(timer); reject(err); });
+function networkFirstStrategy(request) {
+    return fetch(request, { signal: AbortSignal.timeout(5000) })
+        .then((response) => {
+            if (response.ok) {
+                const responseClone = response.clone();
+                caches.open(CACHE_NAME).then((cache) => cache.put(request, responseClone));
+            }
+            return response;
+        })
+        .catch((err) => {
+            console.log(`[SW] Rede falhou para ${request.url}: ${err.message}`);
+
+            return caches.match(request).then((cached) => {
+                if (cached) return cached;
+
+                if (request.mode === 'navigate') {
+                    return caches.match('./index.html').then((page) => page || offlineResponse());
+                }
+
+                return offlineResponse();
+            });
+        });
+}
+
+function offlineResponse() {
+    return new Response('⚠️ Você está offline e não há cache disponível.', {
+        status: 503,
+        statusText: 'Service Unavailable',
+        headers: new Headers({ 'Content-Type': 'text/plain; charset=utf-8' })
     });
 }
 
-async function networkFirst(request) {
-    try {
-        const response = await fetchWithTimeout(request, 5000);
-        if (response.ok && response.type === 'basic') {
-            const copy = response.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
-        }
-        return response;
-    } catch {
-        const cached = await caches.match(request, { ignoreSearch: true });
-        if (cached) return cached;
-
-        if (request.mode === 'navigate') {
-            const page = await caches.match('./index.html');
-            if (page) return page;
-        }
-        return new Response('⚠️ Você está offline e não há cache disponível.', {
-            status: 503,
-            headers: { 'Content-Type': 'text/plain; charset=utf-8' }
-        });
-    }
-}
-
 // ========================================
-// NOTIFICAÇÃO PUSH — "🎉 Nova venda!" com o site fechado
+// PUSH — notificação com o app fechado
 // ========================================
 self.addEventListener('push', (event) => {
     let data = {};
-    try { data = event.data ? event.data.json() : {}; } catch { data = { body: event.data?.text() }; }
+
+    try {
+        data = event.data ? event.data.json() : {};
+    } catch (e) {
+        data = { title: 'Ityrapuã Store', body: event.data ? event.data.text() : '' };
+    }
 
     const title = data.title || 'Ityrapuã Store';
     const options = {
-        body: data.body || 'Você tem uma novidade na loja.',
-        icon: 'img/icon-192.png',
-        badge: 'img/icon-maskable-192.png',
-        tag: data.tag || 'ityrapuan',
+        body: data.body || '',
+        icon: data.icon || './icon-192.png',
+        badge: './icon-192.png',
+        tag: data.tag || 'ityrapuan-aviso',
         renotify: true,
-        silent: false,                      // usa o som de notificação do aparelho
-        requireInteraction: data.kind === 'sale',
-        vibrate: data.kind === 'sale' ? [200, 100, 200, 100, 400] : [150, 80, 150],
-        data: { url: data.url || './index.html#vendas' }
+        data: { url: data.url || './index.html' }
     };
+
     event.waitUntil(self.registration.showNotification(title, options));
 });
 
 self.addEventListener('notificationclick', (event) => {
     event.notification.close();
-    const target = new URL(event.notification.data?.url || './index.html#vendas', self.registration.scope).href;
 
-    event.waitUntil((async () => {
-        const wins = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-        for (const w of wins) {
-            if (w.url.startsWith(self.registration.scope)) {
-                await w.focus();
-                w.postMessage({ type: 'OPEN_SALES', hash: new URL(target).hash });
-                return;
+    const target = new URL(
+        (event.notification.data && event.notification.data.url) || './index.html',
+        self.location.origin
+    ).href;
+
+    event.waitUntil(
+        self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
+            for (const client of clientList) {
+                if (client.url.startsWith(self.location.origin) && 'focus' in client) {
+                    if ('navigate' in client) client.navigate(target);
+                    return client.focus();
+                }
             }
-        }
-        await self.clients.openWindow(target);
-    })());
+            return self.clients.openWindow(target);
+        })
+    );
 });
 
 self.addEventListener('message', (event) => {
-    if (event.data?.type === 'SKIP_WAITING') self.skipWaiting();
+    if (event.data && event.data.type === 'SKIP_WAITING') {
+        self.skipWaiting();
+    }
 });
+
+console.log(`[SW] Service Worker ${CACHE_VERSION} carregado`);
